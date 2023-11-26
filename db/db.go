@@ -771,6 +771,11 @@ func SaveEpoch(data *types.EpochData) error {
 
 	validatorBalanceAverage := new(big.Int).Div(validatorBalanceSum, new(big.Int).SetInt64(int64(validatorsCount)))
 
+	finalized := false
+	if data.Epoch == 0 {
+		finalized = true
+	}
+	
 	_, err = tx.Exec(`
 		INSERT INTO epochs (
 			epoch, 
@@ -1469,26 +1474,26 @@ func saveBlocks(blocks map[uint64]map[string]*types.Block, tx *sql.Tx) error {
 					return fmt.Errorf("error getting sync_committee participants: bitLen != valLen: %v != %v", bitLen, valLen)
 				}
 				nArgs := 4
-				valueStrings := make([]string, valLen)
-				valueArgs := make([]interface{}, valLen*nArgs)
+				valueArgs := make([]any, nArgs)
 				for i, valIndex := range b.SyncAggregate.SyncCommitteeValidators {
-					valueStrings[i] = fmt.Sprintf("($%d, $%d, $%d, $%d)", i*nArgs+1, i*nArgs+2, i*nArgs+3, i*nArgs+4)
-					valueArgs[i*nArgs] = b.Slot
-					valueArgs[i*nArgs+1] = valIndex
+					valueArgs[0] = b.Slot
+					valueArgs[1] = valIndex
 					if utils.BitAtVector(b.SyncAggregate.SyncCommitteeBits, i) {
-						valueArgs[i*nArgs+2] = 1
+						valueArgs[2] = 1
 					} else {
-						valueArgs[i*nArgs+2] = 2
+						valueArgs[2] = 2
 					}
-					valueArgs[i*nArgs+3] = utils.WeekOfSlot(b.Slot)
-				}
-				stmt := fmt.Sprintf(`
+					valueArgs[3] = utils.WeekOfSlot(b.Slot)
+					
+					stmt :=`
 					INSERT INTO sync_assignments_p (slot, validatorindex, status, week)
-					VALUES %s
-					ON CONFLICT (slot, validatorindex, week) DO UPDATE SET status = excluded.status`, strings.Join(valueStrings, ","))
-				_, err := tx.Exec(stmt, valueArgs...)
-				if err != nil {
-					return fmt.Errorf("error executing sync_assignments insert for block %v: %w", b.Slot, err)
+					VALUES ($1, $2, $3, $4)
+					ON CONFLICT (slot, validatorindex, week) DO UPDATE SET status = excluded.status`
+					
+					_, err := tx.Exec(stmt, valueArgs[0], valueArgs[1], valueArgs[2], valueArgs[3])
+					if err != nil {
+						return fmt.Errorf("error executing sync_assignments insert for block %v: %w", b.Slot, err)
+					}
 				}
 			}
 			blockLog.WithField("duration", time.Since(t)).Tracef("sync_assignments_p")
@@ -1512,19 +1517,17 @@ func saveBlocks(blocks map[uint64]map[string]*types.Block, tx *sql.Tx) error {
 						end = len(attestationAssignmentsArgsWeek)
 					}
 
-					valueStrings := make([]string, 0, batchSize)
-					valueArgs := make([]interface{}, 0, batchSize*7)
-					for i, v := range attestationAssignmentsArgsWeek[start:end] {
-						valueStrings = append(valueStrings, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d)", i*7+1, i*7+2, i*7+3, i*7+4, i*7+5, i*7+6, i*7+7))
-						valueArgs = append(valueArgs, v...)
-					}
-					stmt := fmt.Sprintf(`
+					for _, v := range attestationAssignmentsArgsWeek[start:end] {
+						
+						stmt := `
 						INSERT INTO attestation_assignments_p (epoch, validatorindex, attesterslot, committeeindex, status, inclusionslot, week)
-						VALUES %s
-						ON CONFLICT (validatorindex, week, epoch) DO UPDATE SET status = excluded.status, inclusionslot = LEAST((CASE WHEN attestation_assignments_p.inclusionslot = 0 THEN null ELSE attestation_assignments_p.inclusionslot END), excluded.inclusionslot)`, strings.Join(valueStrings, ","))
-					_, err := tx.Exec(stmt, valueArgs...)
-					if err != nil {
-						return fmt.Errorf("error executing stmtAttestationAssignments_p for block %v: %w", b.Slot, err)
+						VALUES ($1, $2, $3, $4, $5, $6, $7)
+						ON CONFLICT (validatorindex, week, epoch) DO UPDATE SET status = excluded.status, inclusionslot = LEAST((CASE WHEN attestation_assignments_p.inclusionslot = 0 THEN null ELSE attestation_assignments_p.inclusionslot END), excluded.inclusionslot)`
+						
+						_, err := tx.Exec(stmt, v...)
+						if err != nil {
+							return fmt.Errorf("error executing stmtAttestationAssignments_p for block %v: %w", b.Slot, err)
+						}
 					}
 				}
 
